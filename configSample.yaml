@@ -1,0 +1,7 @@
+clientid: "tĥis-is-your-id"
+clientsecret: "this-is-your-secret"
+access_token: "this-is-your-access-token"
+refresh_token: "this-is-your-refresh-token"
+account_id: "and-your-account-id"
+default_cache_size: 10
+default_cache_dir: "/home/<USERNAME>/.cache/random-imgur-desktop"
