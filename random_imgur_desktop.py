@@ -85,9 +85,6 @@ class RandomImgurDesktop():
         self.cache_dir = config['default_cache_dir'].replace(
             '<USERNAME>', user)
 
-        if self.cache_size > 0:
-            self.init_cache()
-
     def get_json(self, album_hash):
         """
         Query the given url, and return a
@@ -124,22 +121,32 @@ class RandomImgurDesktop():
 
     def init_cache(self):
         """
-        Ensures the cache is not too full at startup
+        Ensures cache folder exists and that the cache is not too full
+        at startup
 
         Checks there are less files in cache than specified size.
         If too many, removes oldest ones to have fitting size.
         """
-        file_list = []
-        for filename in os.listdir(self.cache_dir):
-            if fnmatch.fnmatch(filename, 'image_*'):
-                absolute = self.cache_dir+filename
-                file_list.append((os.stat(absolute)[stat.ST_MTIME], absolute))
-        file_list.sort(key=lambda a: a[0])
-        to_delete = len(file_list)-self.cache_size
-        if to_delete > 0:
-            for file in file_list[-to_delete:]:
-                print("Cache too full, cleaning file {}".format(file))
-                os.remove(file)
+        print("Initializing cache at", self.cache_dir)
+        if not os.path.exists(self.cache_dir):
+            try:
+                os.makedirs(self.cache_dir)
+            except OSError as error:
+                print("Error creating cache folder:")
+                raise error
+        if(self.cache_size > 0):  # if 0, cache is unlimited
+            file_list = []
+            for filename in os.listdir(self.cache_dir):
+                if fnmatch.fnmatch(filename, 'image_*'):
+                    absolute = self.cache_dir+filename
+                    file_list.append((os.stat(absolute)[stat.ST_MTIME],
+                                      absolute))
+            file_list.sort(key=lambda a: a[0])
+            to_delete = len(file_list)-self.cache_size
+            if to_delete > 0:
+                for file in file_list[-to_delete:]:
+                    print("Cache too full, cleaning file {}".format(file))
+                    os.remove(file)
 
     def update_background(self, filename):
         """
@@ -256,7 +263,7 @@ class RandomImgurDesktop():
         if os.path.isfile(filename):
             with open(filename, "r") as file:
                 for line in file.readlines():
-                    print("Trying to add line", line.replace('\n', ''))
+                    # print("Trying to add line", line.replace('\n', ''))
                     self.add_album(line)
             return True
         print("Non existing file \""+filename+"\"")
@@ -268,7 +275,10 @@ def main():
     Main of the script
     """
     sleeptime = 5
-    random_imgur_desktop = RandomImgurDesktop()
+    try:
+        random_imgur_desktop = RandomImgurDesktop()
+    except OSError:
+        return -1
 
     ###
     # Creation of arguments parser
@@ -286,7 +296,7 @@ def main():
             Incompatible with -a.")
 
     parser.add_argument(
-        "-c", "--cache-size",
+        "-cS", "--cache-size",
         help="Specify the number of images to\
             keep in cache. Default to 10. 0 means no limit")
 
@@ -297,7 +307,7 @@ def main():
     )
 
     parser.add_argument(
-        "-p", "--cache-directory",
+        "-cD", "--cache-directory",
         help="Specify where you wish to keep your cached images.\
         No relative path.\
         Default to /home/<username>/.cache/random-imgur-image/")
@@ -312,7 +322,7 @@ def main():
     elif args.galleries:
         galleries = args.galleries
         if "../" in galleries:
-            print("No relative path in file containing albums!")
+            print("No backward relative path in file containing albums!")
             return -1
         if not random_imgur_desktop.add_multiple_albums(galleries):
             print("Impossible to read file. Exiting.")
@@ -337,12 +347,13 @@ def main():
     if args.cache_directory:
         galleries = args.galleries
         if "../" in galleries:
-            print("No relative path in galleries !")
+            print("No backward relative path in galleries !")
             return -1
+        random_imgur_desktop.cache_dir = args.cache_directory
 
     random_imgur_desktop.sfw = args.safe_for_work
+    random_imgur_desktop.init_cache()
 
-    print(random_imgur_desktop.sfw)
     while True:
         try:
             conn = requests.head("http://www.imgur.com")
