@@ -107,19 +107,6 @@ class RandomImgurDesktop():
             response['data']['error'])
         return False
 
-    def random_select_album(self):
-        """
-        Return a random entry in the table of albums
-
-        Simple takes a random entry in the list of album (of the current
-        object) and returns it. Entries should always be album's hashes,
-        but this function does not check it.
-
-        Return:
-            A string, that is the hash of an album.
-        """
-        return random.sample(self.albums, 1)[0]
-
     def init_cache(self):
         """
         Ensures cache folder exists and that the cache is not too full
@@ -208,7 +195,17 @@ class RandomImgurDesktop():
         self.update_background(random_cached_file)
         return True
 
-    def download_random_image(self, album_data):
+    def check_image_conditions_json(self, image_metadata):
+        """
+        Checks if a given image metadata pass all the required tests (sfw,
+        size,...)
+        """
+        if self.sfw and image_metadata['nsfw']:
+            # user wants sfw, image is not
+            return False
+        return True
+
+    def download_random_image(self):
         """
         From a data response (list of json), downloads one image at random
 
@@ -220,9 +217,14 @@ class RandomImgurDesktop():
             --album_data: A list of json. Each entry is the
                 metadata of one image
         """
+        album_name = random.sample(self.albums, 1)[0]
+        album_data = self.get_json(album_name)
         random_image_metadata = album_data['images'][random.randint(
             0,
             len(album_data['images'])-1)]
+        if not self.check_image_conditions_json(random_image_metadata):
+            return False
+
         image = download_from_url(random_image_metadata['link'])
         extension = get_mimetype_from_json(random_image_metadata)
         filename = self.save_image(image, extension)
@@ -375,30 +377,33 @@ def main():
     random_imgur_desktop.init_cache()
 
     while True:
+        loop_start = time.time()
         try:
             conn = requests.head("http://www.imgur.com")
         except requests.exceptions.ConnectionError:
             # no internet connection
-            print("No internet :( trying to use local cache...")
+            # print("No internet :( trying to use local cache...")
             if not random_imgur_desktop.no_internet():
                 print("No internet and cache is empty, quitting")
                 return -1
         else:
             if conn.ok:
-                print("Connection ok, going normal")
-                album_url = random_imgur_desktop.random_select_album()
-                album_json = random_imgur_desktop.get_json(album_url)
-                image_filename = random_imgur_desktop.download_random_image(
-                    album_json)
+                # print("Connection ok, going normal")
+                image_filename = random_imgur_desktop.download_random_image()
+                while not image_filename:
+                    image_filename =\
+                        random_imgur_desktop.download_random_image()
+
                 random_imgur_desktop.update_background(image_filename)
             else:
                 # imgur is not accessible
-                print("Imgur not accessible ? trying to use local cache...")
+                # print("Imgur not accessible ? trying to use local cache...")
                 if not random_imgur_desktop.no_internet():
                     print("Imgur not accessible and cache is empty, quitting")
                     return -1
         finally:
-            time.sleep(sleeptime)
+            # If we lost time to find the picture, don't sleep too much
+            time.sleep(sleeptime-(loop_start-time.time()))
     return 0
 
 
