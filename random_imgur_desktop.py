@@ -67,7 +67,7 @@ class RandomImgurDesktop():
     """
 
     def __init__(self):
-        self.albums = []
+        self.albums = set()
         self.image_counter = 0
         self.sfw = False
         config_file = 'config.yaml'
@@ -81,6 +81,7 @@ class RandomImgurDesktop():
         user = getpass.getuser()
         self.client_id = config['client_id']
         self.clientsecret = config['client_secret']
+        self.access_token = config['access_token']
         self.cache_size = config['default_cache_size']
         self.cache_dir = config['default_cache_dir'].replace(
             '<USERNAME>', user)
@@ -90,10 +91,11 @@ class RandomImgurDesktop():
         Query the given url, and return a
         json-interpreted version of the content
         """
-        payload = {"client_id": self.client_id}
+        print(album_hash)
+        payload = {"Authorization": "Client-ID " + self.client_id}
         response = requests.get(
             "https://api.imgur.com/3/album/" + str(album_hash),
-            params=payload).json()
+            headers=payload).json()
 
         if response['success']:
             # print("Data was successfully loaded")
@@ -116,8 +118,7 @@ class RandomImgurDesktop():
         Return:
             A string, that is the hash of an album.
         """
-        some_index = random.randint(0, len(self.albums)-1)
-        return self.albums[some_index]
+        return random.sample(self.albums, 1)[0]
 
     def init_cache(self):
         """
@@ -134,19 +135,38 @@ class RandomImgurDesktop():
             except OSError as error:
                 print("Error creating cache folder:")
                 raise error
-        if(self.cache_size > 0):  # if 0, cache is unlimited
-            file_list = []
+
+        file_list = []
+        keep_number = re.compile(r".*image_(\d+)\..{1,5}$")
+        new_counter = 0
+        if self.cache_size > 0:  # strict cache limit
             for filename in os.listdir(self.cache_dir):
                 if fnmatch.fnmatch(filename, 'image_*'):
                     absolute = self.cache_dir+filename
                     file_list.append((os.stat(absolute)[stat.ST_MTIME],
                                       absolute))
-            file_list.sort(key=lambda a: a[0])
-            to_delete = len(file_list)-self.cache_size
-            if to_delete > 0:
-                for file in file_list[-to_delete:]:
-                    print("Cache too full, cleaning file {}".format(file))
-                    os.remove(file)
+
+            if file_list:  # list is not empty
+                file_list.sort(key=lambda a: a[0], reverse=True)
+                to_delete = len(file_list)-self.cache_size
+                if to_delete > 0:
+                    for entry in file_list[-to_delete:]:
+                        print(
+                            "Cache too full, cleaning\
+                                file {}".format(entry[1]))
+                        os.remove(entry[1])
+                        file_list.remove(entry)
+        else:
+            for filename in os.listdir(self.cache_dir):
+                if fnmatch.fnmatch(filename, 'image_*'):
+                    absolute = self.cache_dir+filename
+                    file_list.append(filename)
+            if file_list:
+                file_list.sort()
+                last = file_list[-1]
+                new_counter = int(keep_number.sub(r"\1", last))
+
+        self.image_counter = new_counter
 
     def update_background(self, filename):
         """
@@ -241,14 +261,14 @@ class RandomImgurDesktop():
         # only hash is given
         regex = re.compile(r"^\w+$")
         if regex.match(album):
-            self.albums.append(album)
+            self.albums.add(album)
             return True
         # whole URL
         regex = re.compile(r"^https://imgur.com/a/(\w+)\s*$")
         if regex.match(album):
             album = regex.sub(r"\1", album)
             # print(album)
-            self.albums.append(album)
+            self.albums.add(album)
             return True
 
         print("This url album is not valid:", album)
@@ -274,7 +294,7 @@ def main():
     """
     Main of the script
     """
-    sleeptime = 5
+    sleeptime = 60
     try:
         random_imgur_desktop = RandomImgurDesktop()
     except OSError:
