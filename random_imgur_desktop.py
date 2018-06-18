@@ -21,6 +21,11 @@ import yaml
 from PIL import Image
 
 ####
+# Constants
+###
+ALPHACODERS_API_URL = "https://wall.alphacoders.com/api2.0/get.php"
+
+####
 # Helpers
 ###
 
@@ -82,6 +87,7 @@ class RandomImgurDesktop():
         self.client_id = config['client_id']
         self.clientsecret = config['client_secret']
         self.access_token = config['access_token']
+        self.alphacoders_api_key = config['alphacoders_api_key']
         self.cache_size = config['default_cache_size']
         self.cache_dir = config['default_cache_dir'].replace(
             '<USERNAME>', user)
@@ -217,8 +223,8 @@ class RandomImgurDesktop():
             --album_data: A list of json. Each entry is the
                 metadata of one image
         """
-        album_name = random.sample(self.albums, 1)[0]
-        album_data = self.get_json(album_name)
+        random_source = random.sample(self.albums, 1)[0]
+        album_data = self.get_json(random_source)
         random_image_metadata = album_data['images'][random.randint(
             0,
             len(album_data['images'])-1)]
@@ -260,12 +266,7 @@ class RandomImgurDesktop():
         """
         add the hash of an album to the directory of albums
         """
-        # only hash is given
-        regex = re.compile(r"^\w+$")
-        if regex.match(album):
-            self.albums.add(album)
-            return True
-        # whole URL
+        # imgur
         regex = re.compile(r"^https://imgur.com/a/(\w+)\s*$")
         if regex.match(album):
             album = regex.sub(r"\1", album)
@@ -291,6 +292,27 @@ class RandomImgurDesktop():
         print("Non existing file \""+filename+"\"")
         return False
 
+    def get_alphacoders_categories(self):
+        """
+        Return all the current categories at alphacoders
+        """
+        parameters = {
+            'auth': self.alphacoders_api_key,
+            'method': "category_list"
+        }
+        try:
+            ac_req = requests.get(ALPHACODERS_API_URL,
+                                  params=parameters).json()
+        except requests.ConnectionError:
+            print("No connection to alphacoders")
+            return False
+        # print(ac_req)
+        if not ac_req['success']:
+            print(ac_req['error'])
+            return False
+
+        return [elem['name'] for elem in ac_req['categories']]
+
 
 def main():
     """
@@ -302,37 +324,61 @@ def main():
     except OSError:
         return -1
 
+    wallcoder_categories = random_imgur_desktop.get_alphacoders_categories()
+
     ###
     # Creation of arguments parser
     ###
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Utility to have a random wallpaper from various sources.",
+        prog='RandomImgurDesktop',
+        formatter_class=lambda prog: argparse.HelpFormatter(
+            prog, max_help_position=10, width=200)
+    )
+
+    parser.add_argument("-ac", "--alphacoders",
+                        metavar="category",
+                        nargs="*",
+                        choices=wallcoder_categories,
+                        help="you can fill one or more categories, each\
+                        between quotes and space separated like this:\
+                        'category1' 'category2' 'category3'. Categories may\
+                        be from the following:" +
+                        ', '.join(map(str, wallcoder_categories)))
     parser.add_argument(
-        "-a", "--album",
-        help="Specify a unique album where to pick the images.\
-         Incompatible with -A")
+        "-i", "--imgur",
+        metavar="Imgur url",
+        type=str,
+        help="Specify a unique imgur album where to pick the images.\
+         Incompatible with -I")
 
     parser.add_argument(
-        "-A", "--galleries",
-        help="Specify a file where to find all the galleries\
-            you would like to pick from.Only specify absolute path.\
-            Incompatible with -a.")
+        "-I", "--imgur-file",
+        metavar="Imgur File",
+        type=argparse.FileType('r'),
+        help="Specify a file where to find all the Imgur albums\
+            you would like to pick from. Only specify absolute path.\
+            Incompatible with -i.")
 
     parser.add_argument(
         "-cS", "--cache-size",
+        metavar="size",
+        type=int,
         help="Specify the number of images to\
             keep in cache. Default to 10. 0 means no limit")
+    parser.add_argument(
+        "-cD", "--cache-directory",
+        metavar="cache-directory",
+        type=str,
+        help="Specify where you wish to keep your cached images.\
+        No relative path.\
+        Default to /home/<username>/.cache/random-imgur-image/")
 
     parser.add_argument(
         "-s", "--safe-for-work", action="store_true",
         help="Don't download pictures marked as NSFW ('not safe wor work',\
         that is images with potentially adult content)"
     )
-
-    parser.add_argument(
-        "-cD", "--cache-directory",
-        help="Specify where you wish to keep your cached images.\
-        No relative path.\
-        Default to /home/<username>/.cache/random-imgur-image/")
 
     args = parser.parse_args()
 
