@@ -24,6 +24,7 @@ from PIL import Image
 # Constants
 ###
 ALPHACODERS_API_URL = "https://wall.alphacoders.com/api2.0/get.php"
+IMGUR_API_URL = "https://api.imgur.com/3/album/"
 
 ####
 # Helpers
@@ -56,13 +57,13 @@ def get_mimetype_from_json(json):
     This information exists in the metadata. We parse it to obtain the
     information
     """
-    try:
+    if 'type' in json:
         # extension should be 'image/jpeg' or 'image/png' or...
         extension = json['type'].split('/')[1]
-    except KeyError:
-        print("Json might be wrong:\n", json,
-              "\nCheck if a 'type' field is present")
-        extension = "unknown"
+    elif 'file_type' in json:
+        extension = json['file_type']
+    else:
+        extension = 'unknown'
     return extension
 
 
@@ -72,7 +73,7 @@ class RandomImgurDesktop():
     """
 
     def __init__(self):
-        self.albums = set()
+        self.source = dict()
         self.image_counter = 0
         self.sfw = False
         config_file = 'config.yaml'
@@ -84,23 +85,22 @@ class RandomImgurDesktop():
                 'config.yaml' file at the same location as this script.")
             sys.exit()
         user = getpass.getuser()
-        self.client_id = config['client_id']
-        self.clientsecret = config['client_secret']
-        self.access_token = config['access_token']
+        self.imgur_client_id = config['imgur_client_id']
         self.alphacoders_api_key = config['alphacoders_api_key']
         self.cache_size = config['default_cache_size']
         self.cache_dir = config['default_cache_dir'].replace(
             '<USERNAME>', user)
+        self.alphacoders_categories,\
+            self.alphacoders_cat_ids = self.get_alphacoders_categories()
 
-    def get_json(self, album_hash):
+    def get_json_imgur(self, album_hash):
         """
         Query the given url, and return a
         json-interpreted version of the content
         """
-        print(album_hash)
-        payload = {"Authorization": "Client-ID " + self.client_id}
+        payload = {"Authorization": "Client-ID " + self.imgur_client_id}
         response = requests.get(
-            "https://api.imgur.com/3/album/" + str(album_hash),
+            IMGUR_API_URL + str(album_hash),
             headers=payload).json()
 
         if response['success']:
@@ -111,6 +111,46 @@ class RandomImgurDesktop():
             "Error querying:",
             response['status'],
             response['data']['error'])
+        return False
+
+    def get_json_alphacoders(self, category):
+        """
+        Query alphacoders to return images in a given category
+        """
+        # print(category)
+        if category == "All":
+            spec_params = {
+                "method": "random",
+                "count": 1,
+            }
+        else:
+            # May need to get count of images ?
+            # count_params = {
+            #     "auth": self.alphacoders_api_key,
+            #     "method": "category_count",
+            #     "id": self.alphacoders_categories.index(category)+1
+            # }
+            # count = requests.get(ALPHACODERS_API_URL,
+            #                      params=count_params).json()
+            # print(count)
+            spec_params = {
+                "method": "category",
+                "id": self.alphacoders_cat_ids[
+                    self.alphacoders_categories.index(category)],
+                "page": random.randint(1, 1000),
+                "check_last": 1
+            }
+        params = {
+            "auth": self.alphacoders_api_key,
+            "info_level": 2,
+        }
+        params.update(spec_params)
+        # print(params)
+        response = requests.get(
+            ALPHACODERS_API_URL,
+            params=params).json()
+        if response['success']:
+            return response
         return False
 
     def init_cache(self):
@@ -180,7 +220,7 @@ class RandomImgurDesktop():
         ])
         #####
 
-        print("Background modified")
+        # print("Background modified")
 
     def no_internet(self):
         """
@@ -213,25 +253,36 @@ class RandomImgurDesktop():
 
     def download_random_image(self):
         """
-        From a data response (list of json), downloads one image at random
+        Picks a random source and downloads one image from there (at random)
 
-        Takes the json data of an album (list of json, one entry per
-        image), picks one element at random, downloads it, save it
-        and return the absolute path to the image
+        Chooses a source, one picks one element at random, downloads it
+        save it and return the absolute path to the cached image
 
         Keyword argument
             --album_data: A list of json. Each entry is the
                 metadata of one image
         """
-        random_source = random.sample(self.albums, 1)[0]
-        album_data = self.get_json(random_source)
-        random_image_metadata = album_data['images'][random.randint(
-            0,
-            len(album_data['images'])-1)]
+        # print("Trying a random image")
+        website = random.sample(list(self.source), 1)[0]
+        # print(website)
+        random_source = random.sample(self.source[website], 1)[0]
+        # print(random_source)
+        if website == "Imgur":
+            album_data = self.get_json_imgur(random_source)
+            random_image_metadata = random.choice(album_data['images'])
+            link_key = 'link'
+        elif website == "Alphacoders":
+            album_data = self.get_json_alphacoders(random_source)
+            link_key = 'url_image'
+            if not album_data or not album_data['wallpapers']:
+                # print(album_data)
+                return False
+            # print(album_data)
+            random_image_metadata = random.choice(album_data['wallpapers'])
         if not self.check_image_conditions_json(random_image_metadata):
             return False
 
-        image = download_from_url(random_image_metadata['link'])
+        image = download_from_url(random_image_metadata[link_key])
         extension = get_mimetype_from_json(random_image_metadata)
         filename = self.save_image(image, extension)
         return filename
@@ -262,7 +313,7 @@ class RandomImgurDesktop():
 
         return filename
 
-    def add_album(self, album):
+    def add_imgur_album(self, album):
         """
         add the hash of an album to the directory of albums
         """
@@ -270,24 +321,35 @@ class RandomImgurDesktop():
         regex = re.compile(r"^https://imgur.com/a/(\w+)\s*$")
         if regex.match(album):
             album = regex.sub(r"\1", album)
-            # print(album)
-            self.albums.add(album)
+            if 'Imgur' not in self.source:
+                self.source['Imgur'] = set()
+            self.source['Imgur'].add(album)
             return True
-
-        print("This url album is not valid:", album)
+        print("This is not a valid Imgur album url:", album)
         return False
 
-    def add_multiple_albums(self, filename):
+    def add_alphacoders_categories(self, categories):
         """
-        iterates through a file to add the url
-        to the directory of albums. Lets add_album handle the parsing and
-        checking
+        Add all the asked categories to the list of sources to pick from
+        """
+        for cat in categories:
+            if cat not in self.alphacoders_categories:
+                print("Category", cat, "Not a real category...")
+                return False
+            if 'Alphacoders' not in self.source:
+                self.source['Alphacoders'] = set()
+            self.source['Alphacoders'].add(cat)
+
+    def read_source_file(self, filename):
+        """
+        iterates through a file to add the url to the directory of albums.
+        Lets add_album handle the parsing and checking
         """
         if os.path.isfile(filename):
             with open(filename, "r") as file:
                 for line in file.readlines():
                     # print("Trying to add line", line.replace('\n', ''))
-                    self.add_album(line)
+                    self.add_imgur_album(line)
             return True
         print("Non existing file \""+filename+"\"")
         return False
@@ -305,27 +367,22 @@ class RandomImgurDesktop():
                                   params=parameters).json()
         except requests.ConnectionError:
             print("No connection to alphacoders")
-            return False
+            return False, False
         # print(ac_req)
         if not ac_req['success']:
             print(ac_req['error'])
-            return False
+            return False, False
 
-        return [elem['name'] for elem in ac_req['categories']]
+        names = [elem['name'] for elem in ac_req['categories']]
+        names += ['All']
+        ids = [elem['id'] for elem in ac_req['categories']]
+        return names, ids
 
 
-def main():
+def arguments_parsing(random_imgur):
     """
-    Main of the script
+    Parses the arguments for the command line call
     """
-    sleeptime = 60
-    try:
-        random_imgur_desktop = RandomImgurDesktop()
-    except OSError:
-        return -1
-
-    wallcoder_categories = random_imgur_desktop.get_alphacoders_categories()
-
     ###
     # Creation of arguments parser
     ###
@@ -339,26 +396,26 @@ def main():
     parser.add_argument("-ac", "--alphacoders",
                         metavar="category",
                         nargs="*",
-                        choices=wallcoder_categories,
+                        choices=random_imgur.alphacoders_categories,
                         help="you can fill one or more categories, each\
                         between quotes and space separated like this:\
                         'category1' 'category2' 'category3'. Categories may\
                         be from the following:" +
-                        ', '.join(map(str, wallcoder_categories)))
+                        ', '.join(
+                            map(
+                                str,
+                                random_imgur.alphacoders_categories)))
     parser.add_argument(
         "-i", "--imgur",
         metavar="Imgur url",
         type=str,
-        help="Specify a unique imgur album where to pick the images.\
-         Incompatible with -I")
+        help="Specify a unique imgur album where to pick the images.")
 
     parser.add_argument(
         "-I", "--imgur-file",
         metavar="Imgur File",
-        type=argparse.FileType('r'),
         help="Specify a file where to find all the Imgur albums\
-            you would like to pick from. Only specify absolute path.\
-            Incompatible with -i.")
+            you would like to pick from. Only specify absolute path.")
 
     parser.add_argument(
         "-cS", "--cache-size",
@@ -385,19 +442,21 @@ def main():
     ####
     # Take actions according to arguments
     ###
-    if args.album:
-        random_imgur_desktop.add_album(args.album)
-    elif args.galleries:
-        galleries = args.galleries
-        if "../" in galleries:
-            print("No backward relative path in file containing albums!")
+
+    if not (args.alphacoders or args.album or args.imgur_file):
+        print("You need at least one source")
+    if args.alphacoders:
+        random_imgur.add_alphacoders_categories(args.alphacoders)
+    if args.imgur:
+        random_imgur.add_imgur_album(args.imgur)
+    if args.imgur_file:
+        imgur_file = args.imgur_file
+        if "../" in imgur_file:
+            print("No backward relative path in file containing imgur albums!")
             return -1
-        if not random_imgur_desktop.add_multiple_albums(galleries):
+        if not random_imgur.read_source_file(imgur_file):
             print("Impossible to read file. Exiting.")
             return -1
-    else:
-        print("You need to specify at least one album (with -a or -A)")
-        return -1
 
     if args.cache_size:
         cache_size = args.cache_size
@@ -410,17 +469,31 @@ def main():
                 print("Cache size must be greater or equal to 0.\
                 Using default value")
             else:
-                random_imgur_desktop.cache_size = cache_size
+                random_imgur.cache_size = cache_size
 
     if args.cache_directory:
         galleries = args.galleries
         if "../" in galleries:
             print("No backward relative path in galleries !")
             return -1
-        random_imgur_desktop.cache_dir = args.cache_directory
+        random_imgur.cache_dir = args.cache_directory
 
-    random_imgur_desktop.sfw = args.safe_for_work
-    random_imgur_desktop.init_cache()
+    random_imgur.sfw = args.safe_for_work
+
+
+def main():
+    """
+    Main of the script
+    """
+    sleeptime = 3
+    try:
+        random_imgur = RandomImgurDesktop()
+    except OSError:
+        return -1
+
+    arguments_parsing(random_imgur)
+
+    random_imgur.init_cache()
 
     while True:
         loop_start = time.time()
@@ -429,22 +502,21 @@ def main():
         except requests.exceptions.ConnectionError:
             # no internet connection
             # print("No internet :( trying to use local cache...")
-            if not random_imgur_desktop.no_internet():
+            if not random_imgur.no_internet():
                 print("No internet and cache is empty, quitting")
                 return -1
         else:
             if conn.ok:
                 # print("Connection ok, going normal")
-                image_filename = random_imgur_desktop.download_random_image()
+                image_filename = random_imgur.download_random_image()
                 while not image_filename:
-                    image_filename =\
-                        random_imgur_desktop.download_random_image()
+                    image_filename = random_imgur.download_random_image()
 
-                random_imgur_desktop.update_background(image_filename)
+                random_imgur.update_background(image_filename)
             else:
                 # imgur is not accessible
                 # print("Imgur not accessible ? trying to use local cache...")
-                if not random_imgur_desktop.no_internet():
+                if not random_imgur.no_internet():
                     print("Imgur not accessible and cache is empty, quitting")
                     return -1
         finally:
