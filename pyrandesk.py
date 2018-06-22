@@ -30,11 +30,17 @@ from PIL import Image
 ###
 
 
-def download_image(json):
+def download_image(json, key):
     """
     Given an url, download binary image
+
+    This method does not use any API. The J
+
+    Keyword arguments:
+        json: dictionnary containing a key with the address of the raw image.
+        key: key to identify the url in the dictionnary
     """
-    link = json['url']
+    link = json[key]
     try:
         req = requests.get(link)
         if not req.ok:
@@ -48,6 +54,33 @@ def download_image(json):
         print("Connection error:", exception)
         return False
     return req.content
+
+
+def update_background(filename):
+    """
+    Use dconf to update the background.
+
+    Keywords:
+        -- filename: Absolute path to the image
+    """
+    if not filename or not isinstance(filename, str):
+        print("Filename is empty? Not changing background")
+        return
+
+    key = "/org/gnome/desktop/background/picture-uri"
+    value = "'file://"+filename+"'"
+    # print("Calling", "dconf", "write", key, value)
+    subprocess.Popen([
+        "dconf", "write", key, value
+    ])
+
+    ######
+    # personal need for my conky.
+    # You can probably safely delete this.
+    subprocess.Popen([
+        "feh", "--bg-fill", filename
+    ])
+    #####
 
 
 def open_yaml(config_file):
@@ -69,11 +102,14 @@ def read_source_file(filename):
     Iterates through a file to add the url to the directory of albums.
     Lets add_album handle the parsing and checking
     """
-    if os.path.isfile(filename):
-        with open(filename, "r") as file:
-            return [line for line in file.readlines()]
-    print("Non existing file \""+filename+"\"")
-    return []
+
+    if not os.path.isabs(filename):
+        print("The filename is wrong or relative. Make sure you specify an\
+            existing absolute path to the file")
+        return []
+
+    with open(filename, "r") as file:
+        return [line for line in file.readlines()]
 
 
 class Website():
@@ -87,6 +123,7 @@ class Website():
         self.authentication = config[auth_yaml_key]
         self.source = set()
         self.human_name = human_name
+        self.url_key = None  # please redefine this for your website
 
     def get_group_json(self, identifier):
         """
@@ -132,6 +169,7 @@ class Imgur(Website):
     def __init__(self, human_name, address, auth_yaml_key):
         super().__init__(human_name, address, auth_yaml_key)
         self.albums_hash = []
+        self.url_key = 'link'
 
     def get_group_json(self, album_hash):
         """
@@ -173,6 +211,8 @@ class Imgur(Website):
         Adds them to the potential sources.
         """
         albums = read_source_file(file)
+        if not albums:
+            return False
         for album in albums:
             if not self.add_album(album):
                 return False
@@ -189,12 +229,15 @@ class Imgur(Website):
         """
         Yields a random image (json)
         """
+        if not self.albums_hash:
+            print("No stored album for Imgur")
+            return False
+
         album_hash = random.choice(self.albums_hash)
         album_meta = self.get_group_json(album_hash)
         if not album_meta:
             return False
         random_image = random.choice(album_meta['images'])
-        random_image['url'] = random_image['link']
         return random_image
 
     def get_mimetype(self, json):
@@ -210,6 +253,7 @@ class Alphacoders(Website):
         super().__init__(human_name, address, auth_yaml_key)
         self.all_categories, self.categories_ids = self.get_all_categories()
         self.selected_categories = set()
+        self.url_key = 'url_image'
 
     def get_group_json(self, category):
         """
@@ -301,7 +345,6 @@ class Alphacoders(Website):
         if not cat_meta['wallpapers']:  # empty list
             return {}
         random_image = random.choice(cat_meta['wallpapers'])
-        random_image['url'] = random_image['url_image']
         return random_image
 
     def get_mimetype(self, json):
@@ -379,41 +422,34 @@ class PyRanDesk():
 
         self.image_counter = new_counter
 
+    def set_cache_size(self, cache_size):
+        """
+        Setter for the cache size (in number of images).
+        Ensures it is a positive integer.
+        """
+        try:
+            size = int(cache_size)
+        except ValueError:
+            print("Cache size must be an integer. Using default value.")
+        else:
+            if size < 0:
+                print("Cache size must be greater or equal to 0.\
+                Using default value")
+            else:
+                self.cache_size = size
+
     def set_cache_location(self, location):
         """
         Verifies the passed location is correct, and updates the target of
         the cache.
         """
-        if ".." in location:
-            print("No relative location for the cache. Only absolute")
+        if not isinstance(location, str):
+            print("Parameter 'location' should be str, not", type(location))
+        if not os.path.isabs(location):
+            print("No relative location for the cache. Only absolute. ")
             return False
         self.cache_dir = location
         return True
-
-    def update_background(self, filename):
-        """
-        Use dconf to update the background
-        """
-        if not filename:
-            print("Filename is empty? Not changing background")
-            return
-
-        key = "/org/gnome/desktop/background/picture-uri"
-        value = "'file://"+filename+"'"
-        # print("Calling", "dconf", "write", key, value)
-        subprocess.Popen([
-            "dconf", "write", key, value
-        ])
-
-        ######
-        # personal need for my conky.
-        # You can probably safely delete this.
-        subprocess.Popen([
-            "feh", "--bg-fill", filename
-        ])
-        #####
-
-        # print("Background modified")
 
     def get_cached_image(self):
         """
@@ -427,12 +463,11 @@ class PyRanDesk():
             if fnmatch.fnmatch(filename, 'image_*'):
                 absolute = self.cache_dir+filename
                 file_list.append(absolute)
-        print(file_list)
+        # print(file_list)
         if not file_list:
             return False
         random_cached_file = file_list[random.randint(0, len(file_list)-1)]
-        self.update_background(random_cached_file)
-        return True
+        return random_cached_file
 
     def download_random_image(self):
         """
@@ -441,6 +476,7 @@ class PyRanDesk():
         Chooses a source, one picks one element at random, downloads it
         save it and return the absolute path to the cached image
         """
+        print("Source is", self.websites)
         website = random.choice(list(self.websites))
 
         random_image_meta = website.get_random_image()
@@ -448,7 +484,7 @@ class PyRanDesk():
             return False
 
         extension = website.get_mimetype(random_image_meta)
-        image = download_image(random_image_meta)
+        image = download_image(random_image_meta, website.url_key)
 
         filename = self.save_image(image, extension)
         return filename
@@ -456,7 +492,11 @@ class PyRanDesk():
     def save_image(self, binary, extension):
         """
         Save an image with given extension to the cache directory of the object
+
+        Keyword arguments:
+            binary: the binary image (raw from the GET request)
         """
+        # print(binary)
         i = Image.open(BytesIO(binary))
         filename_mini = "image_{:05}".format(self.image_counter)
         filename_path = self.cache_dir + filename_mini
@@ -485,7 +525,12 @@ class PyRanDesk():
     def test_internet(self):
         """
         For each selected entry, test if there is internet access to the
-        API. If not, remove from the list
+        API. If not, remove from the source list. Returns whether there is
+        still at least one entry in the list.
+
+        Return value:
+            True if at least one given website is accessible.
+            False otherwise.
         """
         for web in self.websites:
             if not web.check_connection():
@@ -506,44 +551,41 @@ def arguments_parsing(pyrandesk):
         formatter_class=lambda prog: argparse.HelpFormatter(
             prog, max_help_position=10, width=200))
 
-    parser.add_argument(
-        "-ac",
-        "--alphacoders",
-        metavar="category",
-        nargs="*",
-        choices=pyrandesk.alphacoders_categories,
-        help="you can fill one or more categories, each\
+    parser.add_argument("-ac", "--alphacoders",
+                        metavar="category",
+                        nargs="*",
+                        choices=pyrandesk.alphacoders_categories,
+                        help="you can fill one or more categories, each\
                         between quotes and space separated like this:\
                         'category1' 'category2' 'category3'. Categories may\
                         be from the following:" +
-        ', '.join(map(str, pyrandesk.alphacoders_categories)))
-    parser.add_argument(
-        "-i", "--imgur",
-        metavar="Imgur url",
-        type=str,
-        help="Specify a unique imgur album where to pick the images.")
-    parser.add_argument(
-        "-I", "--imgur-file",
-        metavar="Imgur File",
-        help="Specify a file where to find all the Imgur albums\
-            you would like to pick from. Only specify absolute path.")
-    parser.add_argument(
-        "-cS", "--cache-size",
-        metavar="size",
-        type=int,
-        help="Specify the number of images to\
+                        ', '.join(map(str, pyrandesk.alphacoders_categories)))
+    parser.add_argument("-i", "--imgur",
+                        metavar="Imgur url",
+                        type=str,
+                        help="Specify a unique imgur album where to pick" +
+                        "the images.")
+    parser.add_argument("-I", "--imgur-file",
+                        metavar="Imgur File",
+                        help="Specify a file where to find all the Imgur" +
+                        "albums you would like to pick from." +
+                        " Only specify absolute path.")
+    parser.add_argument("-cS", "--cache-size",
+                        metavar="size",
+                        type=int,
+                        help="Specify the number of images to\
             keep in cache. Default to 10. 0 means no limit")
-    parser.add_argument(
-        "-cD", "--cache-directory",
-        metavar="cache-directory",
-        type=str,
-        help="Specify where you wish to keep your cached images.\
-        No relative path.\
-        Default to /home/<username>/.cache/pyrandesk")
-    parser.add_argument(
-        "-s", "--safe-for-work", action="store_true",
-        help="Don't download pictures marked as NSFW ('not safe wor work',\
-        that is images with potentially adult content)")
+    parser.add_argument("-cD", "--cache-directory",
+                        metavar="cache-directory",
+                        type=str,
+                        help="Specify where you wish to keep your cached " +
+                        "images. No relative path.Default to " +
+                        "/home/<username>/.cache/pyrandesk")
+    parser.add_argument("-s", "--safe-for-work",
+                        action="store_true",
+                        help="Don't download pictures marked as " +
+                        "NSFW ('not safe wor work', that is images with " +
+                        "potentially adult content)")
 
     args = parser.parse_args()
 
@@ -563,33 +605,23 @@ def arguments_parsing(pyrandesk):
 
     # If source is Imgur-related
     if args.imgur:
-        pyrandesk.websites.add(pyrandesk.imgur)
-        if not pyrandesk.add_imgur_album(args.imgur):
-            sys.exit("Can't add the album")
-
+        if pyrandesk.imgur.add_album(args.imgur):
+            pyrandesk.websites.add(pyrandesk.imgur)
+        else:
+            print("Can't add the album", args.imgur)
     if args.imgur_file:
-        pyrandesk.websites.add(pyrandesk.imgur)
-
         imgur_file = args.imgur_file
-        if "../" in imgur_file:
-            print("No backward relative path in file containing imgur albums!")
-            return False
-        if not pyrandesk.imgur.input_albums_file(imgur_file):
+        if pyrandesk.imgur.input_albums_file(imgur_file):
+            pyrandesk.websites.add(pyrandesk.imgur)
+        else:
             print("Error with file", imgur_file)
-            return False
+
+    if not pyrandesk.websites:
+        print("No valid source, stopping")
+        return False
 
     if args.cache_size:
-        cache_size = args.cache_size
-        try:
-            cache_size = int(cache_size)
-        except ValueError:
-            print("Cache size must be an integer. Using default value.")
-        else:
-            if cache_size < 0:
-                print("Cache size must be greater or equal to 0.\
-                Using default value")
-            else:
-                pyrandesk.cache_size = cache_size
+        pyrandesk.set_cache_size(args.cache_size)
 
     if args.cache_directory:
         pyrandesk.set_cache_location(args.cache_directory)
@@ -607,10 +639,10 @@ def main():
         pyrandesk = PyRanDesk()
     except OSError as error:
         sys.exit("Error initializing main class:", error)
-        return -1
 
     if not arguments_parsing(pyrandesk):
-        return sys.exit("Error parsing arguments")
+        sys.exit("Error parsing arguments")
+
     pyrandesk.init_cache()
 
     while True:
@@ -625,11 +657,11 @@ def main():
             if not image_filename:  # cache is empty
                 sys.exit("No internet and cache is empty, quitting")
 
-        pyrandesk.update_background(image_filename)
+        update_background(image_filename)
 
         # If we lost time to find the picture, don't sleep too much
         spent_time = time.time()-loop_start
-        print("Time spent in loop:", spent_time)
+        # print("Time spent in loop:", spent_time)
         time.sleep(sleeptime-spent_time)
 
     return
