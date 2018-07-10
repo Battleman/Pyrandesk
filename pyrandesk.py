@@ -19,7 +19,7 @@ from pprint import pprint
 
 import requests
 import yaml
-from PIL import Image
+from PIL import Image, ImageFile
 
 ####
 # Constants
@@ -251,9 +251,11 @@ class Alphacoders(Website):
 
     def __init__(self, human_name, address, auth_yaml_key):
         super().__init__(human_name, address, auth_yaml_key)
-        self.all_categories, self.categories_ids = self.get_all_categories()
         self.selected_categories = set()
         self.url_key = 'url_image'
+        self.cached_categories = "categories.txt"
+        self.all_categories, self.categories_ids = self.get_all_categories(
+            self.cached_categories)
 
     def get_group_json(self, category):
         """
@@ -309,7 +311,7 @@ class Alphacoders(Website):
         self.selected_categories = list(self.selected_categories)
         return True
 
-    def get_all_categories(self, nameonly=False):
+    def get_all_categories(self, cache_location, nameonly=False):
         """
         Return all the current categories at alphacoders
         """
@@ -322,8 +324,8 @@ class Alphacoders(Website):
                                   params=parameters).json()
         except requests.ConnectionError:
             print("No connection to alphacoders")
-            names = []
-            ids = []
+            # with open(cache_location+self.cached_categories, 'r') as cache:
+            # names, ids = [[line[0], line[1]] for line in cache.readlines()]
         else:
             if not ac_req['success']:
                 print(ac_req['error'])
@@ -331,7 +333,9 @@ class Alphacoders(Website):
             names = [elem['name'] for elem in ac_req['categories']]
             names += ['All']
             ids = [elem['id'] for elem in ac_req['categories']]
-
+            with open(cache_location+self.cached_categories, 'w') as cache:
+                for couple in zip(names, ids):
+                    cache.write(couple)
         if nameonly:
             return names
         return names, ids
@@ -364,13 +368,18 @@ class PyRanDesk():
         self.cache_size = config['default_cache_size']
         self.cache_dir = config['default_cache_dir'].replace(
             '<USERNAME>', user)
+
         self.imgur = Imgur("Imgur", "https://api.imgur.com/3/album/",
                            "imgur_client_id")
         self.alpha = Alphacoders("Alphacoders",
                                  "https://wall.alphacoders.com/api2.0/get.php",
                                  "alphacoders_api_key")
+        # self.example = Example("Example",
+        #                        "https://example.com/api/",
+        #                        "example_api_key")
+
         self.alphacoders_categories = self.alpha.get_all_categories(
-            nameonly=True)
+            cache_location=self.cache_dir, nameonly=True)
         self.websites = set()
         self.conditions = dict()
 
@@ -557,8 +566,8 @@ def arguments_parsing(pyrandesk):
                         choices=pyrandesk.alphacoders_categories,
                         help="you can fill one or more categories, each\
                         between quotes and space separated like this:\
-                        'category1' 'category2' 'category3'. Categories may\
-                        be from the following:" +
+                        'category1' 'category2' 'category3'. Categories\
+                        may be from the following:" +
                         ', '.join(map(str, pyrandesk.alphacoders_categories)))
     parser.add_argument("-i", "--imgur",
                         metavar="Imgur url",
@@ -635,6 +644,7 @@ def main():
     Main of the script
     """
     sleeptime = 60*3
+    ImageFile.LOAD_TRUNCATED_IMAGES = True
     try:
         pyrandesk = PyRanDesk()
     except OSError as error:
