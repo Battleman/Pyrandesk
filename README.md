@@ -6,4 +6,11 @@ This python script intends to dynamically modify the desktop regularly, based on
 
 
 ## Requirements
-So far, none.
+
+* Python Modules:
+    * PIL (Pillow)
+
+## Notes and thanks
+The watermarking module was made mainly with the help of [the blog of thecodingcouple](http://www.thecodingcouple.com/watermark-images-python-pillow-pil/).
+It was mainly copy-pasted, but I'm planning on improving it in the near future. Anyway, big up !
+
