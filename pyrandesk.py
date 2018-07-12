@@ -15,15 +15,18 @@ import subprocess
 import sys
 import time
 from io import BytesIO
-from pprint import pprint
-
+import tkinter
 import requests
 import yaml
 from PIL import Image, ImageFile
 
+from watermarking import add_watermark, resize_image
+
 ####
 # Constants
 ###
+VERBOSE = False
+verboseprint = print if VERBOSE else lambda *a, **k: None
 
 ####
 # Helpers
@@ -44,11 +47,11 @@ def download_image(json, key):
     try:
         req = requests.get(link)
         if not req.ok:
-            print("Failed to get {}. Reason: HTTP error {}, '{}'".format(
+            verboseprint("Failed to get {}. Reason: HTTP code {}, '{}'".format(
                 link, req.status_code, req.reason))
             return False
     except requests.exceptions.MissingSchema as exception:
-        print("Invalid URL schema:", exception)
+        verboseprint("Invalid URL schema:", exception)
         return False
     except requests.exceptions.ConnectionError as exception:
         print("Connection error:", exception)
@@ -91,8 +94,8 @@ def open_yaml(config_file):
         with open(config_file) as file:
             config = yaml.load(file)
     else:
-        pprint("Error reading config file. Please ensure the file '" +
-               config_file+"' exists")
+        print("Error reading config file. Please ensure the file '" +
+              config_file+"' exists")
         sys.exit()
     return config
 
@@ -159,6 +162,14 @@ class Website():
         except requests.ConnectionError:
             return False
         return True
+
+    def get_watermark_text(self):
+        """
+        Yields the text that should watermark the image
+        (that is the source/creator of the image).
+        If none, no watermark will be added
+        """
+        return None
 
 
 class Imgur(Website):
@@ -243,6 +254,14 @@ class Imgur(Website):
     def get_mimetype(self, json):
         return json['type'].split('/')[1]
 
+    def get_watermark_text(self, json):
+        # url = json['link']
+        username = json['account_url']
+        if username == 'null':
+            username = 'Anonymous'
+        text = "Imgur | {}".format(username)
+        return text
+
 
 class Alphacoders(Website):
     """
@@ -285,7 +304,7 @@ class Alphacoders(Website):
             }
         params = {
             "auth": self.authentication,
-            "info_level": 2,
+            "info_level": 2
         }
         params.update(spec_params)
         # print(params)
@@ -323,7 +342,7 @@ class Alphacoders(Website):
             ac_req = requests.get(self.api_address,
                                   params=parameters).json()
         except requests.ConnectionError:
-            print("No connection to alphacoders")
+            verboseprint("No connection to alphacoders")
             # with open(cache_location+self.cached_categories, 'r') as cache:
             # names, ids = [[line[0], line[1]] for line in cache.readlines()]
         else:
@@ -333,15 +352,17 @@ class Alphacoders(Website):
             names = [elem['name'] for elem in ac_req['categories']]
             names += ['All']
             ids = [elem['id'] for elem in ac_req['categories']]
-            with open(cache_location+self.cached_categories, 'w') as cache:
-                for couple in zip(names, ids):
-                    cache.write(couple)
+            # with open(cache_location+self.cached_categories, 'w') as cache:
+            #     for cat, cat_id in zip(names, ids):
+            #         line = "{},{}\n".format(cat, cat_id)
+            #         cache.write(line)
         if nameonly:
             return names
         return names, ids
 
     def check_conditions(self, image_meta, conditions):
         super().check_conditions(self, image_meta)
+        return True
 
     def get_random_image(self):
         category = random.choice(self.selected_categories)
@@ -354,6 +375,11 @@ class Alphacoders(Website):
     def get_mimetype(self, json):
         return json['file_type']
 
+    def get_watermark_text(self, json):
+        username = json['user_name']
+        text = "Alphacoders | {}".format(username)
+        return text
+
 
 class PyRanDesk():
     """
@@ -363,7 +389,6 @@ class PyRanDesk():
     def __init__(self):
         config = open_yaml('config.yaml')
         self.image_counter = 0
-        self.sfw = False
         user = getpass.getuser()
         self.cache_size = config['default_cache_size']
         self.cache_dir = config['default_cache_dir'].replace(
@@ -381,7 +406,9 @@ class PyRanDesk():
         self.alphacoders_categories = self.alpha.get_all_categories(
             cache_location=self.cache_dir, nameonly=True)
         self.websites = set()
-        self.conditions = dict()
+        self.conditions = {}
+        root = tkinter.Tk()
+        self.resolution = (root.winfo_screenwidth(), root.winfo_screenheight())
 
     def init_cache(self):
         """
@@ -391,7 +418,7 @@ class PyRanDesk():
         Checks there are less files in cache than specified size.
         If too many, removes oldest ones to have fitting size.
         """
-        print("Initializing cache at", self.cache_dir)
+        verboseprint("Initializing cache at", self.cache_dir)
         if not os.path.exists(self.cache_dir):
             try:
                 os.makedirs(self.cache_dir)
@@ -414,7 +441,7 @@ class PyRanDesk():
                 to_delete = len(file_list)-self.cache_size
                 if to_delete > 0:
                     for entry in file_list[-to_delete:]:
-                        print(
+                        verboseprint(
                             "Cache too full, cleaning\
                                 file {}".format(entry[1]))
                         os.remove(entry[1])
@@ -485,20 +512,22 @@ class PyRanDesk():
         Chooses a source, one picks one element at random, downloads it
         save it and return the absolute path to the cached image
         """
-        print("Source is", self.websites)
+        # print("Source is", self.websites)
         website = random.choice(list(self.websites))
 
         random_image_meta = website.get_random_image()
-        if not random_image_meta:
+        if not (random_image_meta and
+                website.check_conditions(random_image_meta, self.conditions)):
             return False
 
         extension = website.get_mimetype(random_image_meta)
         image = download_image(random_image_meta, website.url_key)
 
-        filename = self.save_image(image, extension)
+        filename = self.save_image(
+            image, extension, website.get_watermark_text(random_image_meta))
         return filename
 
-    def save_image(self, binary, extension):
+    def save_image(self, binary, extension, watermark):
         """
         Save an image with given extension to the cache directory of the object
 
@@ -506,14 +535,22 @@ class PyRanDesk():
             binary: the binary image (raw from the GET request)
         """
         # print(binary)
-        i = Image.open(BytesIO(binary))
+        image = Image.open(BytesIO(binary))
+        image_resized = resize_image(image, self.resolution)
+        image_watermarked = add_watermark(
+            image_resized,
+            watermark,
+            self.resolution)
+
         filename_mini = "image_{:05}".format(self.image_counter)
         filename_path = self.cache_dir + filename_mini
         filename = filename_path + "." + extension
-        for to_remove in glob.glob(filename_path+".*"):
+        filename_orig = filename_path+"_orig."+extension
+        for to_remove in glob.glob(filename_path+"*.*"):
             os.remove(to_remove)
         try:
-            i.save(filename)
+            image_watermarked.save(filename)
+            image.save(filename_orig)
         except FileNotFoundError:
             print("Impossible to save at location {},".format(filename) +
                   "ensure the folder exists.")
@@ -525,8 +562,9 @@ class PyRanDesk():
 
         self.image_counter += 1
         if self.image_counter == self.cache_size:
-            print("Reached max cache size ({})".format(self.cache_size) +
-                  ", starting over")
+            verboseprint("Reached max cache size " +
+                         "({})".format(self.cache_size) +
+                         ", starting over")
             self.image_counter = 0
 
         return filename
@@ -595,7 +633,8 @@ def arguments_parsing(pyrandesk):
                         help="Don't download pictures marked as " +
                         "NSFW ('not safe wor work', that is images with " +
                         "potentially adult content)")
-
+    parser.add_argument("-v", "--verbose", action='store_true',
+                        help="Toggle verbosity")
     args = parser.parse_args()
 
     ####
@@ -635,7 +674,7 @@ def arguments_parsing(pyrandesk):
     if args.cache_directory:
         pyrandesk.set_cache_location(args.cache_directory)
 
-    pyrandesk.sfw = args.safe_for_work
+    pyrandesk.conditions['sfw'] = args.safe_for_work
     return True
 
 
@@ -643,7 +682,7 @@ def main():
     """
     Main of the script
     """
-    sleeptime = 60*3
+    sleeptime = 10
     ImageFile.LOAD_TRUNCATED_IMAGES = True
     try:
         pyrandesk = PyRanDesk()
@@ -671,8 +710,8 @@ def main():
 
         # If we lost time to find the picture, don't sleep too much
         spent_time = time.time()-loop_start
-        # print("Time spent in loop:", spent_time)
-        time.sleep(sleeptime-spent_time)
+        verboseprint("Time spent in loop:", spent_time)
+        time.sleep(max(sleeptime-spent_time, 0))
 
     return
 
