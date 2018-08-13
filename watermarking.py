@@ -27,7 +27,7 @@ def add_watermark(image, text, screen_size):
 
     text_canvas = Image.new('RGBA', watermark_size, (0, 0, 0, 170))
     text_draw = ImageDraw.Draw(text_canvas)
-    font = ImageFont.truetype('OpenSans-Regular', 12)
+    font = ImageFont.truetype('FreeMono', 12)
     text_width, text_height = text_draw.textsize(text, font)
     x_coord = (image_height-text_width)/2  # width - textWidth - margin
     y_coord = text_height//4  # height - textHeight - margin
@@ -47,7 +47,7 @@ def add_watermark(image, text, screen_size):
     return image.convert("RGB")
 
 
-def resize_image(image, screen_size=(1929, 1080)):
+def resize_image(image, screen_size=(1920, 1080)):
     """
     Takes an image and new dimensions, and return the image resized
     accordingly. If one of the dimensions is None, it will be resized to
@@ -55,18 +55,26 @@ def resize_image(image, screen_size=(1929, 1080)):
     """
     width, height = screen_size
     image_width, image_height = image.size
-
-    if width is None and height is not None:
-        image_width = (image_width * height) / image_height
-        image_height = height
-    elif width is not None and height is None:
-        image_height = (image_height * width) / image_width
+    if image_width/image_height > 16/9:
+        # Too tall
+        image_height = (image_height * width) // image_width
         image_width = width
-    elif width is not None and height is not None:
+    elif image_width/image_height < 16/9:
+        # too wide
+        image_width = (image_width * height) // image_height
+        image_height = height
+    else:
+        # good ratio
         image_width = width
         image_height = height
+    resized = image.resize(
+        (int(image_width), int(image_height)), Image.ANTIALIAS)
+    canvas = Image.new("RGB", screen_size)
+    canvas.paste(resized,
+                 ((width-image_width)//2 if width != image_width else 0,
+                 (height-image_height)//2 if height != image_height else 0))
 
-    return image.resize((int(image_width), int(image_height)), Image.ANTIALIAS)
+    return canvas
 
 
 def test():
