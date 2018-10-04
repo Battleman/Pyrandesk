@@ -6,6 +6,7 @@ import argparse
 import fnmatch
 import getpass
 import glob
+import json
 import logging
 import logging.config
 import os
@@ -16,6 +17,7 @@ import subprocess
 import sys
 import time
 from io import BytesIO
+from math import log as mlog
 
 import requests
 import yaml
@@ -27,11 +29,7 @@ from watermarking import add_watermark, resize_image
 # Constants
 ###
 LOCATION = "/storage/Documents/Programming/Python/Pyrandesk/"
-FORMAT = '%(asctime)s -- %(levelname)s -- %(module)s %(lineno)d -- %(message)s'
-logging.basicConfig(level=logging.INFO, format=FORMAT,
-                    filename="/home/battleman/.cache/pyrandesk/.pyrandesk.log")
-LOGGER = logging.getLogger('root')
-LOGGER.info("Running %s", sys.argv[0])
+
 ####
 # Helpers
 ###
@@ -47,6 +45,7 @@ def setup_logging(default_path='logging.yaml',
     value = os.getenv(env_key, None)
     if value:
         path = value
+
     if os.path.exists(path):
         with open(path) as log_file:
             config = yaml.safe_load(log_file.read())
@@ -55,59 +54,7 @@ def setup_logging(default_path='logging.yaml',
         logging.basicConfig(level=default_level)
 
 
-def download_image(json, key):
-    """
-    Given an url, download binary image
-
-    This method does not use any API. The J
-
-    Keyword arguments:
-        json: dictionnary containing a key with the address of the raw image.
-        key: key to identify the url in the dictionnary
-    """
-    link = json[key]
-    try:
-        req = requests.get(link)
-        if not req.ok:
-            LOGGER.error("Failed to get %s. Reason: HTTP code %s, '%s'",
-                         link, req.status_code, req.reason)
-            return False
-    except requests.exceptions.MissingSchema as exception:
-        LOGGER.error("Invalid URL schema: %s", format(exception))
-        return False
-    except requests.exceptions.ConnectionError as exception:
-        LOGGER.error("Connection error: %s", format(exception))
-        return False
-    return req.content
-
-
-def update_background(filename):
-    """
-    Use dconf to update the background.
-
-    Keywords:
-        -- filename: Absolute path to the image
-    """
-    if not filename or not isinstance(filename, str):
-        LOGGER.error("Filename is empty? Not changing background")
-        return
-
-    key = "/org/gnome/desktop/background/picture-uri"
-    value = "'file://"+filename+"'"
-    subprocess.Popen([
-        "dconf", "write", key, value
-    ])
-
-    ######
-    # personal need for my conky.
-    # You can probably safely delete this.
-    # subprocess.Popen([
-    #     "feh", "--bg-fill", filename
-    # ])
-    #####
-
-
-def open_yaml(config_file):
+def open_yaml(config_file, logger):
     """
     Open as yaml file and returns it loaded
     """
@@ -115,26 +62,48 @@ def open_yaml(config_file):
         with open(config_file) as file:
             config = yaml.load(file)
     else:
-        LOGGER.critical(
+        logger.critical(
             "Error reading config file. Please ensure the file '%s' exists",
             config_file)
         sys.exit()
     return config
 
 
-def read_source_file(filename):
+def read_source_file(filename, logger):
     """
     Iterates through a file to add the url to the directory of albums.
     Lets add_album handle the parsing and checking
     """
 
     if not os.path.isabs(filename):
-        LOGGER.error("The filename is wrong or relative. Make sure you"
-                     "specify an existing absolute path to the file")
+        logger.error("The filename '%s' is wrong or relative. Make sure you"
+                     "specify an existing absolute path to the file", filename)
         return []
 
     with open(filename, "r") as file:
         return [line for line in file.readlines()]
+
+
+def limited_connection():
+    """Check Whether or not a connection is marked as 'Limited' (limit
+    data usage)
+
+    Returns:
+        Boolean -- True if connection is marked 'limited', False otherwise
+    """
+
+    connection_name = subprocess.check_output(
+        "nmcli -t -f GENERAL.CONNECTION --mode tabular device show".split(" "))
+    connection_name = connection_name.strip().decode('utf-8').split("\n")[0]
+    if connection_name == '':
+        return False
+    metered = subprocess.check_output(
+        "nmcli -f connection.metered connection show {}".format(
+            connection_name).split(" "))
+    metered = metered.strip().decode('utf-8').split(" ")[-1]
+    if metered == "yes":
+        return True
+    return False
 
 
 class Website():
@@ -144,12 +113,40 @@ class Website():
 
     def __init__(self, human_name, address, auth_yaml_key):
         self.logger = logging.getLogger(__name__)
-        config = open_yaml(LOCATION+'config.yaml')
+        config = open_yaml(LOCATION+'config.yaml', self.logger)
         self.api_address = address
         self.authentication = config[auth_yaml_key]
         self.source = set()
         self.human_name = human_name
         self.url_key = None  # please redefine this for your website
+
+    def download_image(self, json_info, key):
+        """
+        Given an url, download binary image
+
+        This method does not use any API. The J
+
+        Keyword arguments:
+            json: dictionnary containing the address of the raw image.
+            key: key to identify the url in the dictionnary
+        """
+        link = json_info[key]
+        logger = logging.getLogger(__name__)
+        logger.info("Downloading %s", link)
+        try:
+            req = requests.get(link)
+            if not req.ok:
+                self.logger.error("Failed to get %s." +
+                                  " Reason: HTTP code %s, '%s'",
+                                  link, req.status_code, req.reason)
+                return False
+        except requests.exceptions.MissingSchema as exception:
+            self.logger.error("Invalid URL schema: %s", format(exception))
+            return False
+        except requests.exceptions.ConnectionError as exception:
+            self.logger.error("Connection error: %s", format(exception))
+            return False
+        return req.content
 
     def get_group_json(self, identifier):
         """
@@ -170,7 +167,7 @@ class Website():
         """
         pass
 
-    def get_mimetype(self, json):
+    def get_mimetype(self, json_info):
         """
         Returns the type of the file
         """
@@ -192,7 +189,7 @@ class Website():
         (that is the source/creator of the image).
         If none, no watermark will be added
         """
-        return None
+        return "Unknown"
 
 
 class Imgur(Website):
@@ -212,12 +209,16 @@ class Imgur(Website):
         """
         super().get_group_json(album_hash)
         payload = {"Authorization": "Client-ID " + self.authentication}
-        response = requests.get(
-            self.api_address + str(album_hash),
-            headers=payload).json()
+        try:
+            response = requests.get(
+                self.api_address + str(album_hash),
+                headers=payload).json()
+        except json.decoder.JSONDecodeError as err:
+            self.logger.error("Error decoding Json: %s", err)
+            return False
 
         if not response['success']:
-            LOGGER.error(
+            self.logger.error(
                 "Error querying Imgur; status: %s | %s",
                 response['status'],
                 response['data']['error'])
@@ -235,7 +236,7 @@ class Imgur(Website):
             album = regex.sub(r"\1", album)
             self.albums_hash.append(album)
             return True
-        LOGGER.error("This is not a valid Imgur album url: %s", album)
+        self.logger.error("This is not a valid Imgur album url: %s", album)
         return False
 
     def input_albums_file(self, file):
@@ -243,7 +244,7 @@ class Imgur(Website):
         Reads the file in argument and considers every line as an album.
         Adds them to the potential sources.
         """
-        albums = read_source_file(file)
+        albums = read_source_file(file, self.logger)
         if not albums:
             return False
         for album in albums:
@@ -263,7 +264,7 @@ class Imgur(Website):
         Yields a random image (json)
         """
         if not self.albums_hash:
-            LOGGER.error("No stored album for Imgur")
+            self.logger.error("No stored album for Imgur")
             return False
 
         album_hash = random.choice(self.albums_hash)
@@ -273,12 +274,12 @@ class Imgur(Website):
         random_image = random.choice(album_meta['images'])
         return random_image
 
-    def get_mimetype(self, json):
-        return json['type'].split('/')[1]
+    def get_mimetype(self, json_info):
+        return json_info['type'].split('/')[1]
 
-    def get_watermark_text(self, json):
-        # url = json['link']
-        username = json['account_url']
+    def get_watermark_text(self, json_info):
+        # url = json_info['link']
+        username = json_info['account_url']
         if username == 'null':
             username = 'Anonymous'
         text = "Imgur | {}".format(username)
@@ -342,7 +343,8 @@ class Alphacoders(Website):
         """
         for cat in categories:
             if cat not in self.all_categories:
-                LOGGER.warning("Category '%s' is not a real category...", cat)
+                self.logger.warning(
+                    "Category '%s' is not a real category...", cat)
                 return False
             if cat == 'All':
                 self.selected_categories = [cat]
@@ -365,19 +367,20 @@ class Alphacoders(Website):
             ac_req = requests.get(self.api_address,
                                   params=parameters).json()
         except requests.ConnectionError:
-            LOGGER.warning("No connection to alphacoders")
+            self.logger.warning("No connection to alphacoders")
             try:
                 with open(cache_location+self.cached_categories, 'r') as cache:
                     for line in cache.readlines():
-                        l = line[:-1].split(',')
-                        names.append(l[0])
-                        ids.append(l[1])
+                        split_line = line[:-1].split(',')
+                        names.append(split_line[0])
+                        ids.append(split_line[1])
             except FileNotFoundError:
-                LOGGER.warning("Error reading cached categories.")
+                self.logger.warning("Error reading cached categories.")
                 names, ids = [[], []]
+
         else:
             if not ac_req['success']:
-                LOGGER.warning(ac_req['error'])
+                self.logger.warning(ac_req['error'])
                 return False
             names = [elem['name'] for elem in ac_req['categories']]
             ids = [elem['id'] for elem in ac_req['categories']]
@@ -417,7 +420,9 @@ class PyRanDesk():
     """
 
     def __init__(self):
-        config = open_yaml(LOCATION+'config.yaml')
+        self.logger = logging.getLogger(__name__)
+        config = open_yaml(LOCATION+'config.yaml', self.logger)
+        self.logger.info("Init pyrandesk instance")
         self.image_counter = 0
         user = getpass.getuser()
         self.cache_size = config['default_cache_size']
@@ -436,6 +441,7 @@ class PyRanDesk():
         self.alphacoders_categories = self.alpha.get_all_categories(
             cache_location=self.cache_dir, nameonly=True)
         self.websites = set()
+        self.accessible_websites = set()
         self.conditions = {}
         self.resolution = (1920, 1080)
 
@@ -447,12 +453,14 @@ class PyRanDesk():
         Checks there are less files in cache than specified size.
         If too many, removes oldest ones to have fitting size.
         """
-        LOGGER.info("Initializing cache at %s", self.cache_dir)
+        self.logger.info("Initializing cache with size %d at %s",
+                         self.cache_size, self.cache_dir)
         if not os.path.exists(self.cache_dir):
             try:
                 os.makedirs(self.cache_dir)
             except OSError as error:
-                LOGGER.critical("Error creating cache folder:", exec_info=True)
+                self.logger.critical(
+                    "Error creating cache folder:", exec_info=True)
                 raise error
 
         file_list = []
@@ -470,7 +478,7 @@ class PyRanDesk():
                 to_delete = len(file_list)-self.cache_size
                 if to_delete > 0:
                     for entry in file_list[-to_delete:]:
-                        LOGGER.info(
+                        self.logger.info(
                             "Cache too full, cleaning file %s", entry[1])
                         os.remove(entry[1])
                         file_list.remove(entry)
@@ -494,10 +502,11 @@ class PyRanDesk():
         try:
             size = int(cache_size)
         except ValueError:
-            LOGGER.error("Cache size must be an integer. Using default value.")
+            self.logger.error(
+                "Cache size must be an integer. Using default value.")
         else:
             if size < 0:
-                LOGGER.error(
+                self.logger.error(
                     "Cache size must be greater or equal to 0."
                     " Using default value (%d)", self.cache_size)
             else:
@@ -509,11 +518,11 @@ class PyRanDesk():
         the cache.
         """
         if not isinstance(location, str):
-            LOGGER.critical(
+            self.logger.critical(
                 "Parameter 'location' should be str, not %s", type(location))
             return False
         if not os.path.isabs(location):
-            LOGGER.critical(
+            self.logger.critical(
                 "No relative location for the cache. Only absolute. ")
             return False
         self.cache_dir = location
@@ -534,6 +543,7 @@ class PyRanDesk():
         if not file_list:
             return False
         random_cached_file = file_list[random.randint(0, len(file_list)-1)]
+        # self.logger.INFO()
         return random_cached_file
 
     def download_random_image(self):
@@ -543,7 +553,7 @@ class PyRanDesk():
         Chooses a source, one picks one element at random, downloads it
         save it and return the absolute path to the cached image
         """
-        website = random.choice(list(self.websites))
+        website = random.choice(list(self.accessible_websites))
 
         random_image_meta = website.get_random_image()
         if not (random_image_meta and
@@ -551,7 +561,7 @@ class PyRanDesk():
             return False
 
         extension = website.get_mimetype(random_image_meta)
-        image = download_image(random_image_meta, website.url_key)
+        image = website.download_image(random_image_meta, website.url_key)
 
         filename = self.save_image(
             image, extension, website.get_watermark_text(random_image_meta))
@@ -564,36 +574,41 @@ class PyRanDesk():
         Keyword arguments:
             binary: the binary image (raw from the GET request)
         """
+        max_num_files = int(mlog(self.cache_size, 10)//1 + 1)
+        filename_mini = "image_%0*d" % (max_num_files, self.image_counter)
+        filename_path = self.cache_dir + filename_mini
+        filename = filename_path + "." + extension
+        filename_orig = filename_path + "_orig." + extension
+        self.logger.info("Saving to %s", filename)
+        for to_remove in glob.glob(filename_path+"*.*"):
+            os.remove(to_remove)
+
         image = Image.open(BytesIO(binary))
         image_resized = resize_image(image, self.resolution)
-        LOGGER.info("Resizing to resolution %s", self.resolution)
+        self.logger.info("Resizing to resolution %s", self.resolution)
         image_watermarked = add_watermark(
             image_resized,
             watermark,
             self.resolution)
 
-        filename_mini = "image_{:05}".format(self.image_counter)
-        filename_path = self.cache_dir + filename_mini
-        filename = filename_path + "." + extension
-        filename_orig = filename_path+"_orig."+extension
-        for to_remove in glob.glob(filename_path+"*.*"):
-            os.remove(to_remove)
         try:
             image_watermarked.save(filename)
             image.save(filename_orig)
         except FileNotFoundError:
-            LOGGER.critical("Impossible to save at location %s, "
-                            "ensure the folder exists.", filename)
+            self.logger.critical("Impossible to save at location %s, "
+                                 "ensure the folder exists.", filename)
             return False
         except PermissionError:
-            LOGGER.critical("Permission to write at location %s was denied,"
-                            " ensure you have correct rights.", filename)
+            self.logger.critical("Permission to write at location %s "
+                                 "was denied, ensure you have correct"
+                                 " rights.", filename)
             return False
 
         self.image_counter += 1
         if self.image_counter == self.cache_size:
-            LOGGER.info("Reached max cache size (%s), starting over",
-                        self.cache_size)
+            self.logger.info("Reached max cache size (%s), "
+                             "starting to overwrite",
+                             self.cache_size)
             self.image_counter = 0
 
         return filename
@@ -608,13 +623,43 @@ class PyRanDesk():
             True if at least one given website is accessible.
             False otherwise.
         """
-        for web in self.websites.copy():
+        if limited_connection():
+            self.logger.info("Limited background data usage")
+            return False
+        self.accessible_websites = self.websites.copy()
+        for web in self.websites:
             if not web.check_connection():
-                self.websites.remove(web)
-        return len(self.websites) > 0
+                self.logger.warning("No connection to %s", web)
+                self.accessible_websites.remove(web)
+        return len(self.accessible_websites) > 0
+
+    def update_background(self, filename):
+        """
+        Use dconf to update the background.
+
+        Keywords:
+            -- filename: Absolute path to the image
+        """
+        if not filename or not isinstance(filename, str):
+            self.logger.error("Filename is empty? Not changing background")
+            return
+
+        key = "/org/gnome/desktop/background/picture-uri"
+        value = "'file://"+filename+"'"
+        subprocess.Popen([
+            "dconf", "write", key, value
+        ])
+
+        ######
+        # personal need for my conky.
+        # You can probably safely delete this.
+        # subprocess.Popen([
+        #     "feh", "--bg-fill", filename
+        # ])
+        #####
 
 
-def arguments_parsing(pyrandesk):
+def arguments_parsing(pyrandesk, logger):
     """
     Parses the arguments for the command line call
     """
@@ -686,16 +731,16 @@ def arguments_parsing(pyrandesk):
         if pyrandesk.imgur.add_album(args.imgur):
             pyrandesk.websites.add(pyrandesk.imgur)
         else:
-            LOGGER.error("Can't add the album %s", args.imgur)
+            logger.error("Can't add the album %s", args.imgur)
     if args.imgur_file:
         imgur_file = args.imgur_file
         if pyrandesk.imgur.input_albums_file(imgur_file):
             pyrandesk.websites.add(pyrandesk.imgur)
         else:
-            LOGGER.error("Error with file %s", imgur_file)
+            logger.error("Error with file %s", imgur_file)
 
     if not pyrandesk.websites:
-        LOGGER.critical("No valid source, stopping")
+        logger.critical("No valid source, stopping")
         return False
 
     if args.cache_size:
@@ -713,35 +758,40 @@ def main():
     Main of the script
     """
     setup_logging()
-    sleeptime = 45
+    logger = logging.getLogger(__name__)
+    sleeptime = 60*5
     ImageFile.LOAD_TRUNCATED_IMAGES = True
     try:
         pyrandesk = PyRanDesk()
     except OSError as error:
-        sys.exit("Error initializing main class: {}".format(error))
+        logger.critical("Error initializing main class: %s", error)
+        sys.exit()
 
-    if not arguments_parsing(pyrandesk):
-        sys.exit("Error parsing arguments")
+    if not arguments_parsing(pyrandesk, logger):
+        logger.critical("Error parsing arguments")
+        sys.exit()
 
     pyrandesk.init_cache()
 
     while True:
         loop_start = time.time()
-        image_filename = ""
+        image_filename = None
         internet = pyrandesk.test_internet()
         if internet:
             while not image_filename:
                 image_filename = pyrandesk.download_random_image()
         else:  # no internet, trying local cache
+            logger.info("No internet, trying cache")
             image_filename = pyrandesk.get_cached_image()
             if not image_filename:  # cache is empty
-                sys.exit("No internet and cache is empty, quitting")
+                logger.critical("No internet and cache is empty, quitting")
+                sys.exit()
 
-        update_background(image_filename)
+        pyrandesk.update_background(image_filename)
 
         # If we lost time to find the picture, don't sleep too much
         spent_time = time.time()-loop_start
-        LOGGER.debug("Time spent in loop: %d", spent_time)
+        logger.debug("Time spent in loop: %d", spent_time)
         time.sleep(max(sleeptime-spent_time, 0))
 
     return
