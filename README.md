@@ -7,8 +7,11 @@ This python script intends to dynamically modify the desktop regularly, based on
 
 ## Requirements
 
-* Python Modules:
-    * PIL (Pillow)
+* Python Modules. You can install then with pip or conda, using the name in parenthesis.
+    * PIL (`pillow`)
+    * Yaml (`yaml`/`pyyaml`)
+        * apparently, using `conda install yaml` or `pip install yaml` does not work. Only `pip install pyyaml` does...
+    * Requests (`requests`)
 
 ## Notes and thanks
 The watermarking module was made mainly with the help of [the blog of thecodingcouple](http://www.thecodingcouple.com/watermark-images-python-pillow-pil/) [and their github](https://github.com/townsean/image-marker)

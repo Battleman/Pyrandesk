@@ -19,17 +19,17 @@ def add_watermark(image, text, screen_size):
         output: absolute path to the output image
     """
     image = image.convert('RGBA')
-    image_height = image.height
-    _, screen_height = screen_size
+    screen_height = screen_size[1]
     margin = 5
     text_color = "#BBB"
-    watermark_size = (image_height, image_height)
 
-    text_canvas = Image.new('RGBA', watermark_size, (0, 0, 0, 170))
+    text_canvas = Image.new('RGBA',
+                            (image.height, image.height),
+                            (0, 0, 0, 170))
     text_draw = ImageDraw.Draw(text_canvas)
-    font = ImageFont.truetype('FreeMono', 12)
+    font = ImageFont.truetype('FreeMono', 15)
     text_width, text_height = text_draw.textsize(text, font)
-    x_coord = (image_height-text_width)/2  # width - textWidth - margin
+    x_coord = (image.height-text_width)//2  # width - textWidth - margin
     y_coord = text_height//4  # height - textHeight - margin
     text_draw.text((x_coord, y_coord), text, text_color, font)
     text_canvas = text_canvas.rotate(90)
@@ -39,7 +39,7 @@ def add_watermark(image, text, screen_size):
                                  (0, 0, 0, 0))
     watermark_canvas.paste(
         text_canvas,
-        (0, -(image_height-text_width)//2 + margin))
+        (0, -(image.height-text_width)//2 + margin))
 
     image.paste(watermark_canvas,
                 (margin, (screen_height-text_width)//2),
@@ -70,9 +70,9 @@ def resize_image(image, screen_size=(1920, 1080)):
     resized = image.resize(
         (int(image_width), int(image_height)), Image.ANTIALIAS)
     canvas = Image.new("RGB", screen_size)
-    canvas.paste(resized,
-                 ((width-image_width)//2 if width != image_width else 0,
-                 (height-image_height)//2 if height != image_height else 0))
+    canvas.paste(resized, (
+        (width-image_width)//2 if width != image_width else 0,
+        (height-image_height)//2 if height != image_height else 0))
 
     return canvas
 
