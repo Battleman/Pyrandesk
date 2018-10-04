@@ -1,2 +1,5 @@
 .vscode*
 config.yaml
+*.log
+
+__pycache__/
