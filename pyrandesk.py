@@ -91,19 +91,33 @@ def limited_connection():
     Returns:
         Boolean -- True if connection is marked 'limited', False otherwise
     """
-
-    connection_name = subprocess.check_output(
-        "nmcli -t -f GENERAL.CONNECTION --mode tabular device show".split(" "))
-    connection_name = connection_name.strip().decode('utf-8').split("\n")[0]
-    if connection_name == '':
-        return False
-    metered = subprocess.check_output(
-        "nmcli -f connection.metered connection show {}".format(
-            connection_name).split(" "))
-    metered = metered.strip().decode('utf-8').split(" ")[-1]
-    if metered == "yes":
+    logger = logging.getLogger(__name__)
+    try:
+        connection_name = subprocess.check_output(
+            "nmcli -t -f GENERAL.CONNECTION --mode tabular device show".split(" "))
+        connection_name = connection_name.strip().decode(
+            'utf-8').split("\n")[0]
+        logger.info("On connection '{}'".format(connection_name))
+        if connection_name == '':
+            logger.warning(
+                "Unable to obtain connection name. Probably no connection.")
+            return False
+        if "wired" in connection_name.lower():
+            logger.info("On wired connection")
+            return False
+        metered = subprocess.check_output(
+            "nmcli -f connection.metered connection show {}".format(
+                connection_name).split(" "))
+        metered = metered.strip().decode('utf-8').split(" ")[-1]
+    except subprocess.CalledProcessError as e:
+        logger.error("Subprocess error '%s'. In doubt, so marking" +
+                     " as limited. Stay safe kids!", e)
         return True
-    return False
+    else:
+        if metered == "yes":
+            logger.info("Metered connection")
+            return True
+        return False
 
 
 class Website():
@@ -405,12 +419,117 @@ class Alphacoders(Website):
         random_image = random.choice(cat_meta['wallpapers'])
         return random_image
 
-    def get_mimetype(self, json):
-        return json['file_type']
+    def get_mimetype(self, json_info):
+        return json_info['file_type']
 
-    def get_watermark_text(self, json):
-        username = json['user_name']
+    def get_watermark_text(self, json_info):
+        username = json_info['user_name']
         text = "Alphacoders | {}".format(username)
+        return text
+
+
+class Unsplash(Website):
+    """
+    Defines all functions and attributes linked to Alphacoders
+    """
+
+    def __init__(self, human_name, address, auth_yaml_key):
+        super().__init__(human_name, address, auth_yaml_key)
+        self.selected_categories = set()
+        self.url_key = 'url_image'
+        self.cached_categories = "categories.txt"
+        self.all_categories, self.categories_ids = self.get_all_categories(
+            "/home/battleman/.cache/pyrandesk/")
+
+    def get_group_json(self, category):
+        """
+        Query unsplash to return a random image
+        """
+        super().get_group_json(category)
+        random_api = "photos/random"
+        response = requests.get(self.api_address + random_api).json()
+        try:
+            _ = response['id']
+            return response
+        except KeyError:
+            self.logger.warning("Error querying Unsplash: %s",
+                                response['error'])
+            return False
+
+    def add_categories(self, categories):
+        """
+        Add all the asked categories to the list of sources to pick from
+        """
+        for cat in categories:
+            if cat not in self.all_categories:
+                self.logger.warning(
+                    "Category '%s' is not a real category...", cat)
+                return False
+            if cat == 'All':
+                self.selected_categories = [cat]
+                return True
+            self.selected_categories.add(cat)
+        self.selected_categories = list(self.selected_categories)
+        return True
+
+    def get_all_categories(self, cache_location, nameonly=False):
+        """
+        Return all the current categories at alphacoders
+        """
+        names = []
+        ids = []
+        parameters = {
+            'auth': self.authentication,
+            'method': "category_list"
+        }
+        try:
+            ac_req = requests.get(self.api_address,
+                                  params=parameters).json()
+        except requests.ConnectionError:
+            self.logger.warning("No connection to alphacoders")
+            try:
+                with open(cache_location+self.cached_categories, 'r') as cache:
+                    for line in cache.readlines():
+                        split_line = line[:-1].split(',')
+                        names.append(split_line[0])
+                        ids.append(split_line[1])
+            except FileNotFoundError:
+                self.logger.warning("Error reading cached categories.")
+                names, ids = [[], []]
+
+        else:
+            if not ac_req['success']:
+                self.logger.warning(ac_req['error'])
+                return False
+            names = [elem['name'] for elem in ac_req['categories']]
+            ids = [elem['id'] for elem in ac_req['categories']]
+            with open(cache_location+self.cached_categories, 'w') as cache:
+                for cat, cat_id in zip(names, ids):
+                    line = "{},{}\n".format(cat, cat_id)
+                    cache.write(line)
+        names += ['All']
+        if nameonly:
+            return names
+        return names, ids
+
+    def check_conditions(self, image_meta, conditions):
+        super().check_conditions(self, image_meta)
+        return True
+
+    def get_random_image(self):
+        category = random.choice(self.selected_categories)
+        cat_meta = self.get_group_json(category)
+        if not cat_meta['wallpapers']:  # empty list
+            return {}
+        random_image = random.choice(cat_meta['wallpapers'])
+        return random_image
+
+    def get_mimetype(self, _):
+        return 'jpg'
+
+    def get_watermark_text(self, json_info):
+        username = json_info['user']['username']
+        text = "Unsplash | {}".format(username)
         return text
 
 
@@ -434,6 +553,9 @@ class PyRanDesk():
         self.alpha = Alphacoders("Alphacoders",
                                  "https://wall.alphacoders.com/api2.0/get.php",
                                  "alphacoders_api_key")
+        # self.unsplash = Unsplash("Unsplash",
+        #                          "https://api.unsplash.com/",
+        #                          "unsplash_api_key")
         # self.example = Example("Example",
         #                        "https://example.com/api/",
         #                        "example_api_key")
